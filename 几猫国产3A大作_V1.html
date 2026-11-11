@@ -6220,6 +6220,11 @@ errors ${window.__errors.length}${window.__errors.length?`
 #net-addr,#net-name{width:100%;box-sizing:border-box;background:rgba(0,0,0,.45);
   border:1px solid rgba(216,240,208,.4);color:#d8f0d0;padding:7px 9px;
   font:13px ui-monospace,monospace;border-radius:3px;outline:none}
+#net-team{display:flex;gap:6px;width:100%}
+#net-team button{flex:1;cursor:pointer;background:rgba(0,0,0,.45);color:#d8f0d0;
+  border:1px solid rgba(216,240,208,.4);border-radius:3px;padding:6px 0;
+  font:700 13px "PingFang SC",sans-serif;letter-spacing:.2em}
+#net-team button.on{background:#d8f0d0;color:#0a0f0c;border-color:#d8f0d0}
 #net-join{cursor:pointer;background:#d8f0d0;color:#0a0f0c;border:0;border-radius:3px;
   padding:7px 26px;font:700 14px "PingFang SC",sans-serif;letter-spacing:.2em}
 #net-join:disabled{opacity:.45;cursor:default}
@@ -6240,6 +6245,8 @@ errors ${window.__errors.length}${window.__errors.length?`
 .net-plate .net-hp{width:64px;height:5px;margin:3px auto 0;background:rgba(0,0,0,.55);
   border:1px solid rgba(216,240,208,.5);border-radius:2px;overflow:hidden}
 .net-plate .net-hp i{display:block;height:100%;background:#ff6a3d;width:100%}
+.net-plate .net-name{color:#8fb8ff}
+.net-plate.team1 .net-name{color:#ff8d80}
 </style>
 <script id="net-lan">
 (()=>{
@@ -6254,8 +6261,8 @@ const iv=setInterval(()=>{
 function init(G){
   const THREE=G.THREE;
   let ws=null,netActive=false,myId=null,applyingRemote=false,hitFrom=null;
-  let score={},deathAt=0;
-  const remotes=new Map(),names=new Map();
+  let score={},deathAt=0,myTeam=0;
+  const remotes=new Map(),names=new Map(),teams=new Map();
   let pendingPlayers=null,pendingRelays=[];
 
   // ---------- UI ----------
@@ -6265,11 +6272,18 @@ function init(G){
   panel.innerHTML='<div class="net-title">联机对战</div>'+
     '<input id="net-addr" placeholder="ws://192.168.1.5:8080" spellcheck="false">'+
     '<input id="net-name" placeholder="你的昵称" maxlength="12" spellcheck="false">'+
+    '<div id="net-team"><button type="button" data-team="0" class="on">正方</button>'+
+    '<button type="button" data-team="1">反方</button></div>'+
     '<button id="net-join">连接</button><div id="net-status"></div>';
   app.appendChild(panel);
   const addrInput=panel.querySelector("#net-addr");
   const nameInput=panel.querySelector("#net-name");
   try{nameInput.value=localStorage.netName||"";}catch{}
+  const teamBtns=[...panel.querySelectorAll("#net-team button")];
+  try{myTeam=localStorage.netTeam==="1"?1:0;}catch{}
+  const syncTeam=()=>{for(const b of teamBtns)b.classList.toggle("on",+b.dataset.team===myTeam);};
+  for(const b of teamBtns)b.onclick=()=>{myTeam=+b.dataset.team;try{localStorage.netTeam=String(myTeam);}catch{}syncTeam();};
+  syncTeam();
   const joinBtn=panel.querySelector("#net-join");
   const statusEl=panel.querySelector("#net-status");
   if(location.protocol==="http:"||location.protocol==="https:")
@@ -6289,7 +6303,10 @@ function init(G){
     const es=Object.entries(score);
     scoreboard.textContent=es.length
       ? es.sort((a,b)=>b[1].k-a[1].k)
-          .map(([id,s])=>`${+id===myId?"你":(names.get(+id)||"玩家"+id)} ${s.k}`).join(" · ")
+          .map(([id,s])=>{
+            const nid=+id,tag=teams.has(nid)?(teams.get(nid)===1?"【反】":"【正】"):"";
+            return `${tag}${nid===myId?"你":(names.get(nid)||"玩家"+id)} ${s.k}`;
+          }).join(" · ")
       : "0 : 0";
   };
 
@@ -6305,7 +6322,7 @@ function init(G){
     };
     mk(.18,.75,.18,0x3a3f45,-.11,.375,0);   // 左腿
     mk(.18,.75,.18,0x3a3f45, .11,.375,0);   // 右腿
-    mk(.46,.55,.26,0xff6a3d,0,1.025,0);     // 躯干（橙色，远处可识别）
+    const torso=mk(.46,.55,.26,0xff6a3d,0,1.025,0); // 躯干（默认橙色，states 带 team 后染队色）
     mk(.14,.55,.16,0x3a3f45,-.33,1.0,0);    // 左臂
     mk(.14,.55,.16,0x3a3f45, .33,1.0,0);    // 右臂
     mk(.30,.30,.30,0xd9b08c,0,1.45,0);      // 头
@@ -6316,11 +6333,16 @@ function init(G){
     plate.innerHTML='<span class="net-name"></span><div class="net-hp"><i></i></div>';
     plate.querySelector(".net-name").textContent=name||"对手";
     document.body.appendChild(plate);
-    const e={grp,plate,hpBar:plate.querySelector(".net-hp i"),
+    const e={grp,plate,hpBar:plate.querySelector(".net-hp i"),torso,
       pos:new THREE.Vector3(),target:new THREE.Vector3(),
       yaw:0,tYaw:0,hp:100,alive:true};
     remotes.set(id,e);
     return e;
+  }
+  function applyTeam(r,team){
+    r.team=team;
+    if(r.torso)r.torso.material.color.setHex(team===1?0xd94f3d:0x2f6fed);
+    r.plate.classList.toggle("team1",team===1);
   }
   function destroyRemote(id){
     const r=remotes.get(id);
@@ -6343,14 +6365,14 @@ function init(G){
     ws.onopen=()=>{
       const nm=(nameInput.value||"").trim()||"几猫";
       try{localStorage.netName=nm;}catch{}
-      send({t:"hello",name:nm});setStatus("已连接，进入中…");
+      send({t:"hello",name:nm,team:myTeam});setStatus("已连接，进入中…");
     };
     ws.onmessage=ev=>{let m;try{m=JSON.parse(ev.data);}catch{return;}onMsg(m);};
     ws.onerror=()=>{setStatus("连接失败");};
     ws.onclose=()=>{
       const was=netActive;
       netActive=false;ws=null;joinBtn.disabled=false;
-      destroyAllRemotes();names.clear();score={};
+      destroyAllRemotes();names.clear();teams.clear();score={};
       scoreboard.hidden=true;respawnOv.hidden=true;
       if(was){G.hud.message("连接断开",3);setStatus("连接断开");}
       else setStatus("连接失败");
@@ -6362,13 +6384,14 @@ function init(G){
     switch(m.t){
       case "welcome":{
         myId=m.you;
+        if(typeof m.team==="number")myTeam=m.team;
         pendingPlayers=m.players||{};
         pendingRelays=m.relays||[];
         for(const [id,nm] of Object.entries(pendingPlayers))names.set(+id,nm);
         break;}
       case "begin":{
         netActive=true;panel.hidden=true;scoreboard.hidden=false;
-        destroyAllRemotes();names.clear();score={};updateScore();
+        destroyAllRemotes();names.clear();teams.clear();score={};updateScore();
         const pl=m.players||pendingPlayers||{};
         for(const [id,nm] of Object.entries(pl)){
           names.set(+id,nm);
@@ -6388,11 +6411,16 @@ function init(G){
         const live=new Set();
         for(const [id,st] of Object.entries(ps)){
           const nid=+id;
+          if(typeof st.team==="number"){
+            teams.set(nid,st.team);
+            if(nid===myId){myTeam=st.team;continue;}
+          }
           if(nid===myId)continue;
           live.add(nid);
           if(st.name)names.set(nid,st.name);
           const fresh=!remotes.has(nid);
           const r=fresh?ensureRemote(nid,st.name||"对手"):remotes.get(nid);
+          if(typeof st.team==="number"&&r.team!==st.team)applyTeam(r,st.team);
           if(st.p){
             r.target.set(st.p[0],st.p[1],st.p[2]);
             r.tYaw=st.ya||0;
@@ -6453,7 +6481,7 @@ function init(G){
         break;}
       case "leave":{
         const nm=names.get(m.who);
-        destroyRemote(m.who);names.delete(m.who);
+        destroyRemote(m.who);names.delete(m.who);teams.delete(m.who);
         G.hud.message(`${nm||"对手"}已离开`,3);
         break;}
       case "full":setStatus("房间已满");break;
@@ -6494,6 +6522,7 @@ function init(G){
       let bestId=null,bestT=Infinity;
       for(const [id,r] of remotes){
         if(!r.alive)continue;
+        if(r.team!==undefined&&r.team===myTeam)continue; // 同队不打（服务器也拦）
         const t=rayCapsule(o,d,
           {x:r.pos.x,y:r.pos.y+.4,z:r.pos.z},
           {x:r.pos.x,y:r.pos.y+1.3,z:r.pos.z},.4);
@@ -6553,7 +6582,7 @@ function init(G){
   }
 
   // ---------- 渲染循环：插值 + 名牌投影 + 重生倒计时 ----------
-  const v=new THREE.Vector3();
+  const v=new THREE.Vector3(),_h=new THREE.Vector3();
   function frame(){
     requestAnimationFrame(frame);
     if(!respawnOv.hidden){
@@ -6569,16 +6598,22 @@ function init(G){
       r.grp.position.copy(r.pos);
       r.grp.rotation.y=r.yaw;
       r.grp.visible=r.alive;
-      r.plate.style.display=r.alive?"block":"none";
       if(r.alive){
         r.hpBar.style.width=Math.max(0,Math.min(100,r.hp))+"%";
-        v.set(r.pos.x,r.pos.y+2.05,r.pos.z).project(G.camera);
-        if(v.z>1||v.z<-1){r.plate.style.display="none";}
-        else{
-          r.plate.style.transform=
-            `translate(-50%,-100%) translate(${(v.x*.5+.5)*innerWidth}px,${(-v.y*.5+.5)*innerHeight}px)`;
-        }
-      }
+        // 反透视：视线检测，被墙挡住就隐藏名牌（模型本身有几何遮挡）
+        _h.set(r.pos.x,r.pos.y+1.55,r.pos.z);
+        let los=true;
+        try{los=!G.physics||!G.physics.lineOfSight||!!G.physics.lineOfSight(G.camera.position,_h);}catch{}
+        if(los){
+          v.set(r.pos.x,r.pos.y+2.05,r.pos.z).project(G.camera);
+          if(v.z>1||v.z<-1){r.plate.style.display="none";}
+          else{
+            r.plate.style.display="block";
+            r.plate.style.transform=
+              `translate(-50%,-100%) translate(${(v.x*.5+.5)*innerWidth}px,${(-v.y*.5+.5)*innerHeight}px)`;
+          }
+        }else r.plate.style.display="none";
+      }else r.plate.style.display="none";
     }
   }
   const RESPAWN_S_UI=5;

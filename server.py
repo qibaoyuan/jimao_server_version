@@ -89,6 +89,7 @@ class Room:
         self.score = {}            # id -> {k, d}（断线保留，显示最终比分）
         self.respawn_at = {}       # id -> 时间戳
         self.relays = set()        # 已切断中继（晚加入者补进度）
+        self.teams = {}            # id -> 0正方 / 1反方
         self.next_id = 0
 
     def send(self, cid, obj):
@@ -118,7 +119,14 @@ def handle_message(room, client, msg):
         if t == "hello":
             room.names[cid] = str(msg.get("name") or f"玩家{cid}")[:12]
             room.score.setdefault(cid, {"k": 0, "d": 0})
-            room.send(cid, {"t": "welcome", "you": cid,
+            try:
+                team = int(msg.get("team", 0))
+            except (TypeError, ValueError):
+                team = 0
+            if team not in (0, 1):
+                team = 0
+            room.teams[cid] = team
+            room.send(cid, {"t": "welcome", "you": cid, "team": team,
                             "players": room.names_map(),
                             "relays": sorted(room.relays)})
             room.send(cid, {"t": "begin", "players": room.names_map()})
@@ -132,7 +140,9 @@ def handle_message(room, client, msg):
                 to = int(msg.get("to"))
             except (TypeError, ValueError):
                 to = None
-            if to in room.players:
+            # 同队（含未 hello 的未知队伍）不转发：friendly fire 由服务器拦截
+            if (cid in room.teams and to in room.players
+                    and room.teams.get(to) != room.teams.get(cid)):
                 room.send(to, {"t": "hit", "from": cid, "to": to,
                                "dmg": msg.get("dmg", 0)})
         elif t == "dead":
@@ -189,6 +199,7 @@ def client_loop(room, client, sock):
                 room.names.pop(cid, None)
                 room.last_state.pop(cid, None)
                 room.respawn_at.pop(cid, None)
+                room.teams.pop(cid, None)
                 # score 保留：断线者仍显示最终比分
                 room.broadcast({"t": "leave", "who": cid})
             try:
@@ -305,7 +316,8 @@ def tick_loop(room):
                 if st:
                     players[pid] = {"name": room.names.get(pid, f"玩家{pid}"),
                                     "p": st["p"], "ya": st["ya"],
-                                    "pi": st["pi"], "hp": st["hp"]}
+                                    "pi": st["pi"], "hp": st["hp"],
+                                    "team": room.teams.get(pid, 0)}
             for cid in room.players:
                 room.send(cid, {
                     "t": "states", "you": cid,
@@ -445,44 +457,51 @@ def selftest():
 
     # 三人加入：各自 welcome{you} + begin{players}
     a = TestClient(port)
-    a.send({"t": "hello", "name": "Alice"})
+    a.send({"t": "hello", "name": "Alice", "team": 0})
     wa = a.wait_for("welcome")
-    assert wa["you"] == 0, wa
+    assert wa["you"] == 0 and wa["team"] == 0, wa
     assert wa["players"] == {"0": "Alice"}, wa
     assert wa["relays"] == [], wa
     ba = a.wait_for("begin")
     assert ba["players"] == {"0": "Alice"}, ba
 
     b = TestClient(port)
-    b.send({"t": "hello", "name": "Bob"})
+    b.send({"t": "hello", "name": "Bob", "team": 0})   # 与 A 同队
     wb = b.wait_for("welcome")
-    assert wb["you"] == 1 and wb["players"] == {"0": "Alice", "1": "Bob"}, wb
+    assert wb["you"] == 1 and wb["team"] == 0, wb
+    assert wb["players"] == {"0": "Alice", "1": "Bob"}, wb
     b.wait_for("begin")
 
     c = TestClient(port)
-    c.send({"t": "hello", "name": "Cara"})
+    c.send({"t": "hello", "name": "Cara", "team": 1})  # 敌队
     wc = c.wait_for("welcome")
-    assert wc["you"] == 2 and len(wc["players"]) == 3, wc
+    assert wc["you"] == 2 and wc["team"] == 1, wc
+    assert len(wc["players"]) == 3, wc
     c.wait_for("begin")
 
     # 状态中继：A 的状态 B、C 都收到，you 各自正确
+    c.send({"t": "state", "p": [7, 0, 7], "ya": 0, "pi": 0, "hp": 100})
     a.send({"t": "state", "p": [1, 2, 3], "ya": 0.5, "pi": 0.1, "hp": 100})
     stb = b.wait_for("states")
     stc = c.wait_for("states")
     assert stb["you"] == 1 and stc["you"] == 2, (stb, stc)
     assert stb["players"]["0"]["p"] == [1, 2, 3], stb
     assert stc["players"]["0"]["p"] == [1, 2, 3], stc
+    assert stb["players"]["0"]["team"] == 0, stb          # states 带 team 字段
+    while "2" not in stb["players"]:                      # 等 C 的状态进来
+        stb = b.wait_for("states", timeout=3)
+    assert stb["players"]["2"]["team"] == 1, stb
 
-    # 定向伤害：只有目标 C 收到
+    # 同队伤害被丢弃：A(0)→B(0) 不转发；随后 A→C(1) 正常 —— B 侧排空期间不得出现任何 hit
+    a.send({"t": "hit", "to": 1, "dmg": 30})
     a.send({"t": "hit", "to": 2, "dmg": 30})
     hit = c.wait_for("hit")
     assert hit == {"t": "hit", "from": 0, "to": 2, "dmg": 30}, hit
-    # B 侧排空到下一个 states，期间不得出现 hit
-    while True:
+    # B 侧排空 0.3s（≥5 个 states 周期），期间不得出现任何 hit
+    drain_end = time.time() + 0.3
+    while time.time() < drain_end:
         m = b.recv(timeout=1.5)
-        assert m.get("t") != "hit", f"B leaked hit: {m}"
-        if m.get("t") == "states":
-            break
+        assert m.get("t") != "hit", f"B leaked hit (friendly fire?): {m}"
 
     # 计分：by="ai" 不加分；by=玩家id 加给该玩家（两条 dead 可能乱序到达，一次收集）
     b.send({"t": "dead", "by": "ai"})
@@ -508,8 +527,9 @@ def selftest():
 
     # 晚加入者从 welcome.relays 补任务进度
     d = TestClient(port)
-    d.send({"t": "hello", "name": "Dan"})
+    d.send({"t": "hello", "name": "Dan"})                # 不带 team → 默认 0
     wd = d.wait_for("welcome")
+    assert wd["team"] == 0, wd
     assert set(wd["relays"]) == {"RELAY_A", "RELAY_C"}, wd
     d.wait_for("begin")
 
