@@ -30,6 +30,7 @@ python3 server.py --selftest     # 协议全链路自测（输出 SELFTEST PASS�
 | 文件 | 说明 |
 |---|---|
 | `server.py` | 联机服务器：同端口 HTTP 游戏页 + WebSocket 中继（每次请求重读 HTML，改页面不用重启） |
+| `requirements.txt` | 依赖说明：**零第三方依赖**（仅标准库），Python **3.12.7** 验证 |
 | `几猫国产3A大作_V1.html` | 游戏本体 = 原版 + 联机模块（末尾 `net-lan` script）+ 少量内部入口暴露 |
 | `docs/superpowers/` | 设计文档（spec）与实施计划 |
 

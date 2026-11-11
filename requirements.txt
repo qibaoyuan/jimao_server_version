@@ -1,0 +1,14 @@
+# 几猫局域网联机服务器 — 依赖说明
+#
+# Python 版本：3.12.7（开发与测试验证版本）
+#   运行命令中的 python3 即此版本；建议 >= 3.8（代码仅用 f-string、
+#   dict、threading 等基础特性，3.8+ 理论可用，未逐一验证）
+#
+# 第三方依赖：无（零依赖）
+#   server.py 仅使用 Python 标准库：
+#   socket / threading / json / base64 / hashlib / struct / time / os / sys
+#
+# 无需执行 pip install，直接运行：
+#   python3 server.py
+#   python3 server.py --port 18080
+#   python3 server.py --selftest
